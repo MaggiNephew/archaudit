@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.pyz
+# tools
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.idea/
+.vscode/
+# audit output: it maps your system's weaknesses, never commit a real vault
+/ArchAudit/

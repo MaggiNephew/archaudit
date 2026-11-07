@@ -1,0 +1,305 @@
+{
+  "tool": "archaudit",
+  "version": "1.0.0",
+  "host": "testbox",
+  "started": "2026-10-07T14:56:12-07:00",
+  "finished": "2026-10-07T14:56:12-07:00",
+  "ran_as_root": false,
+  "options": {
+    "offline": false,
+    "deep": false
+  },
+  "summary": {
+    "critical": 3,
+    "high": 7,
+    "medium": 10,
+    "low": 10,
+    "info": 1,
+    "not_collected": 3
+  },
+  "facts": {
+    "distro": "Arch Linux",
+    "is_arch": "yes",
+    "hostname": "testbox",
+    "cpu_vendor": "GenuineIntel",
+    "kernel": "6.10.1-arch1-1",
+    "last_upgrade": "2026-08-23 (45 days ago)",
+    "pending_updates": "2",
+    "vulnerable_packages": "3",
+    "exposed_ports": "2",
+    "root_encrypted": "no"
+  },
+  "findings": [
+    {
+      "id": "C01",
+      "key": "Packages::Vulnerable package: openssl",
+      "title": "Vulnerable package: openssl",
+      "severity": "critical",
+      "category": "Packages",
+      "evidence": "CVE-2024-9999"
+    },
+    {
+      "id": "C02",
+      "key": "Users & Access::Accounts with an empty password",
+      "title": "Accounts with an empty password",
+      "severity": "critical",
+      "category": "Users & Access",
+      "evidence": "bob"
+    },
+    {
+      "id": "C03",
+      "key": "Users & Access::Additional accounts with UID 0 (root)",
+      "title": "Additional accounts with UID 0 (root)",
+      "severity": "critical",
+      "category": "Users & Access",
+      "evidence": "toor"
+    },
+    {
+      "id": "H01",
+      "key": "Kernel & Boot::CPU mitigations disabled on the kernel command line",
+      "title": "CPU mitigations disabled on the kernel command line",
+      "severity": "high",
+      "category": "Kernel & Boot",
+      "evidence": "root=/dev/sda2 rw mitigations=off quiet"
+    },
+    {
+      "id": "H02",
+      "key": "Kernel & Boot::CPU vulnerable to 1 side-channel issue(s)",
+      "title": "CPU vulnerable to 1 side-channel issue(s)",
+      "severity": "high",
+      "category": "Kernel & Boot",
+      "evidence": "spectre_v2: Vulnerable"
+    },
+    {
+      "id": "H03",
+      "key": "Network::Redis (often unauthenticated) listening on all interfaces (port 6379)",
+      "title": "Redis (often unauthenticated) listening on all interfaces (port 6379)",
+      "severity": "high",
+      "category": "Network",
+      "evidence": "tcp 0.0.0.0:6379 redis-server"
+    },
+    {
+      "id": "H04",
+      "key": "Network::SSH permits direct root login",
+      "title": "SSH permits direct root login",
+      "severity": "high",
+      "category": "Network",
+      "evidence": ""
+    },
+    {
+      "id": "H05",
+      "key": "Packages::Vulnerable package: curl",
+      "title": "Vulnerable package: curl",
+      "severity": "high",
+      "category": "Packages",
+      "evidence": "CVE-2023-38545, CVE-2023-38546"
+    },
+    {
+      "id": "H06",
+      "key": "Packages::Weak package signature checking (myrepo: Never)",
+      "title": "Weak package signature checking (myrepo: Never)",
+      "severity": "high",
+      "category": "Packages",
+      "evidence": "[myrepo] SigLevel = Never"
+    },
+    {
+      "id": "H07",
+      "key": "Users & Access::Passwords stored with weak MD5 hashes",
+      "title": "Passwords stored with weak MD5 hashes",
+      "severity": "high",
+      "category": "Users & Access",
+      "evidence": "toor"
+    },
+    {
+      "id": "M01",
+      "key": "Kernel & Boot::CPU microcode package intel-ucode not installed",
+      "title": "CPU microcode package intel-ucode not installed",
+      "severity": "medium",
+      "category": "Kernel & Boot",
+      "evidence": ""
+    },
+    {
+      "id": "M02",
+      "key": "Kernel & Boot::Kernel upgraded but system not rebooted",
+      "title": "Kernel upgraded but system not rebooted",
+      "severity": "medium",
+      "category": "Kernel & Boot",
+      "evidence": "running 6.10.1-arch1-1; installed module dirs: 6.11.0-arch1-1"
+    },
+    {
+      "id": "M03",
+      "key": "Logs::SSH brute-force activity: 25 failed logins in 30 days",
+      "title": "SSH brute-force activity: 25 failed logins in 30 days",
+      "severity": "medium",
+      "category": "Logs",
+      "evidence": "203.0.113.0: 9\n203.0.113.1: 8\n203.0.113.2: 8"
+    },
+    {
+      "id": "M04",
+      "key": "Network::3 service socket(s) reachable from the network",
+      "title": "3 service socket(s) reachable from the network",
+      "severity": "medium",
+      "category": "Network",
+      "evidence": "tcp 0.0.0.0:22 sshd\ntcp :::22 sshd\ntcp 0.0.0.0:6379 redis-server"
+    },
+    {
+      "id": "M05",
+      "key": "Network::No active firewall detected",
+      "title": "No active firewall detected",
+      "severity": "medium",
+      "category": "Network",
+      "evidence": ""
+    },
+    {
+      "id": "M06",
+      "key": "Network::SSH accepts password logins",
+      "title": "SSH accepts password logins",
+      "severity": "medium",
+      "category": "Network",
+      "evidence": "PasswordAuthentication=no, KbdInteractiveAuthentication=yes"
+    },
+    {
+      "id": "M07",
+      "key": "Packages::System not fully upgraded for 45 days",
+      "title": "System not fully upgraded for 45 days",
+      "severity": "medium",
+      "category": "Packages",
+      "evidence": "last 'starting full system upgrade': 2026-08-23 14:56"
+    },
+    {
+      "id": "M08",
+      "key": "Packages::Vulnerable package: libxml2",
+      "title": "Vulnerable package: libxml2",
+      "severity": "medium",
+      "category": "Packages",
+      "evidence": "CVE-2024-0001"
+    },
+    {
+      "id": "M09",
+      "key": "Users & Access::Users in root-equivalent group 'docker'",
+      "title": "Users in root-equivalent group 'docker'",
+      "severity": "medium",
+      "category": "Users & Access",
+      "evidence": "bob"
+    },
+    {
+      "id": "M10",
+      "key": "Users & Access::sudo rules without password (NOPASSWD)",
+      "title": "sudo rules without password (NOPASSWD)",
+      "severity": "medium",
+      "category": "Users & Access",
+      "evidence": "/etc/sudoers: %wheel ALL=(ALL:ALL) NOPASSWD: ALL"
+    },
+    {
+      "id": "L01",
+      "key": "Filesystem::Root filesystem is not encrypted",
+      "title": "Root filesystem is not encrypted",
+      "severity": "low",
+      "category": "Filesystem",
+      "evidence": ""
+    },
+    {
+      "id": "L02",
+      "key": "Filesystem::Temporary/shared mounts lack hardening options",
+      "title": "Temporary/shared mounts lack hardening options",
+      "severity": "low",
+      "category": "Filesystem",
+      "evidence": "/tmp: missing nodev"
+    },
+    {
+      "id": "L03",
+      "key": "Kernel & Boot::1 kernel hardening setting(s) below recommendation",
+      "title": "1 kernel hardening setting(s) below recommendation",
+      "severity": "low",
+      "category": "Kernel & Boot",
+      "evidence": "kernel.kptr_restrict = 0 (want >= 1)"
+    },
+    {
+      "id": "L04",
+      "key": "Network::SSH X11 forwarding enabled",
+      "title": "SSH X11 forwarding enabled",
+      "severity": "low",
+      "category": "Network",
+      "evidence": ""
+    },
+    {
+      "id": "L05",
+      "key": "Packages::1 file(s) from installed packages are missing",
+      "title": "1 file(s) from installed packages are missing",
+      "severity": "low",
+      "category": "Packages",
+      "evidence": "warning: curl: /usr/share/doc/curl/README (No such file or directory)"
+    },
+    {
+      "id": "L06",
+      "key": "Packages::1 mirror(s) use plain HTTP",
+      "title": "1 mirror(s) use plain HTTP",
+      "severity": "low",
+      "category": "Packages",
+      "evidence": "http://mirror.example/$repo/os/$arch"
+    },
+    {
+      "id": "L07",
+      "key": "Packages::2 package update(s) pending",
+      "title": "2 package update(s) pending",
+      "severity": "low",
+      "category": "Packages",
+      "evidence": "curl 8.1-1 -> 8.4.0-1\nlinux 6.11.0.arch1-1 -> 6.11.1.arch1-1"
+    },
+    {
+      "id": "L08",
+      "key": "Packages::Packages are excluded from upgrades",
+      "title": "Packages are excluded from upgrades",
+      "severity": "low",
+      "category": "Packages",
+      "evidence": "linux"
+    },
+    {
+      "id": "L09",
+      "key": "Users & Access::Home directories readable by other users",
+      "title": "Home directories readable by other users",
+      "severity": "low",
+      "category": "Users & Access",
+      "evidence": "/home/alice drwxr-xr-x"
+    },
+    {
+      "id": "L10",
+      "key": "Users & Access::System accounts with an interactive shell",
+      "title": "System accounts with an interactive shell",
+      "severity": "low",
+      "category": "Users & Access",
+      "evidence": "git (/bin/bash)"
+    },
+    {
+      "id": "I01",
+      "key": "Packages::1 AUR/foreign package(s) are outside security tracking",
+      "title": "1 AUR/foreign package(s) are outside security tracking",
+      "severity": "info",
+      "category": "Packages",
+      "evidence": "yay-bin 12.0-1"
+    }
+  ],
+  "not_collected": [
+    {
+      "item": "Firewall rules (nftables ruleset)",
+      "category": "Network",
+      "kind": "needs root",
+      "detail": "`nft list ruleset` requires root",
+      "fix": "Re-run with `sudo archaudit`"
+    },
+    {
+      "item": "Process names for listening ports",
+      "category": "Network",
+      "kind": "needs root",
+      "detail": "ss only shows processes owned by the current user",
+      "fix": "Re-run with `sudo archaudit`"
+    },
+    {
+      "item": "Effective sshd configuration",
+      "category": "Network",
+      "kind": "needs root",
+      "detail": "parsed config files instead of `sshd -T` (Match blocks ignored)",
+      "fix": "Re-run with `sudo archaudit`"
+    }
+  ]
+}
