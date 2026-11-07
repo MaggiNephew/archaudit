@@ -236,9 +236,10 @@ class VaultWriter:
             parts.append(md.callout("success", "No significant issues found",
                                     "Only low/informational items remain."))
         if not result.is_root:
-            parts.append(md.callout("tip", "Partial audit (not run as root)",
-                                    f"Some checks were skipped. Run `sudo archaudit` for full "
-                                    f"coverage — see {self._link(GAPS, 'Not Collected')}."))
+            hint = result.facts.get("elevate_hint", "Re-run with `sudo archaudit`")
+            parts.append(md.callout("tip", "Partial audit (not run with full privileges)",
+                                    f"Some checks were skipped. {hint} for full coverage — "
+                                    f"see {self._link(GAPS, 'Not Collected')}."))
 
         f = result.facts
         duration = (result.finished - result.started).total_seconds()
@@ -310,13 +311,15 @@ class VaultWriter:
             return "\n\n".join(parts)
         parts.append("Everything the audit tried to gather but could not, why, and how to "
                      "get it next time. Missing data is **not** the same as a passing check.")
-        tools = sorted({g.fix.split("-S ", 1)[1].rstrip("`") for g in result.gaps
-                        if g.kind is GapKind.MISSING_TOOL and "pacman -S" in g.fix})
+        tools = sorted({g.package for g in result.gaps
+                        if g.kind is GapKind.MISSING_TOOL and g.package})
+        install = result.facts.get("install_cmd", "")
         tips = []
         if any(g.kind is GapKind.NEEDS_ROOT for g in result.gaps):
-            tips.append("Run the audit with `sudo` to cover root-only items.")
-        if tools:
-            tips.append(f"Install missing tools: `sudo pacman -S {' '.join(tools)}`")
+            tips.append(result.facts.get("elevate_hint", "Re-run with `sudo archaudit`")
+                        + " to cover the items that need it.")
+        if tools and install:
+            tips.append(f"Install missing tools: `{install} {' '.join(tools)}`")
         if any(g.kind is GapKind.OFFLINE for g in result.gaps):
             tips.append("Run without `--offline` to check CVEs and pending updates.")
         if tips:
@@ -374,6 +377,7 @@ class VaultWriter:
     def _json(self, result: AuditResult, findings: list[Finding]) -> dict[str, Any]:
         return {
             "tool": "archaudit", "version": __version__, "host": result.hostname,
+            "platform": result.facts.get("platform", ""),
             "started": result.started.isoformat(timespec="seconds"),
             "finished": result.finished.isoformat(timespec="seconds"),
             "ran_as_root": result.is_root, "options": result.options,

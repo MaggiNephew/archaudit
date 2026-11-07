@@ -19,6 +19,8 @@ NOLOGIN_SHELLS = ("/usr/bin/nologin", "/sbin/nologin", "/bin/false", "/usr/bin/f
 # Group membership that is effectively root.
 PRIVILEGED_GROUPS = {
     "wheel": (Severity.INFO, "can use sudo (if enabled in sudoers)"),
+    "sudo": (Severity.INFO, "can use sudo (Debian/Ubuntu)"),
+    "adm": (Severity.INFO, "can read system logs"),
     "docker": (Severity.MEDIUM, "can start privileged containers = root without a password"),
     "libvirt": (Severity.LOW, "can manage VMs and host devices"),
     "disk": (Severity.HIGH, "raw read/write access to disks"),
@@ -106,7 +108,8 @@ def collect_users(ctx: Context) -> list[Note]:
                      ", ".join(sorted(member_of.get(acc.name, []))),
                      shadow.get(acc.name, "needs root")))
     humans = [a for a in accounts if a.human]
-    note.summary = f"{len(humans)} user account(s), {len(groups.get('wheel', []))} in wheel"
+    admins = sorted(set(groups.get("wheel", [])) | set(groups.get("sudo", [])))
+    note.summary = f"{len(humans)} user account(s), {len(admins)} with sudo group membership"
     note.add(md.heading("Login-capable and human accounts"),
              md.table(("User", "UID", "Shell", "Home", "Groups", "Password"), rows),
              md.callout("example", f"All {len(accounts)} accounts",
@@ -157,7 +160,8 @@ def _account_checks(ctx: Context, accounts: list[Account], shadow: dict[str, str
         ctx.finding(
             "Passwords stored with weak MD5 hashes", Severity.HIGH, CAT,
             "MD5-crypt hashes can be cracked quickly if `/etc/shadow` leaks.",
-            "Have the users change their passwords; Arch defaults to yescrypt.",
+            "Have the users change their passwords; current distributions hash new "
+            "passwords with yescrypt or SHA-512.",
             evidence=", ".join(weak),
         )
     sys_shells = [f"{a.name} ({a.shell})" for a in accounts

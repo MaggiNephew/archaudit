@@ -203,13 +203,26 @@ def _firewall(ctx: Context, note: Note) -> bool:
             " (ruleset could not be inspected without root)") +
             ". Any service listening on a network interface is reachable by other hosts "
             "on the same network, e.g. public Wi-Fi.",
-            "Enable a simple default-deny inbound firewall, e.g. `sudo pacman -S ufw && "
-            "sudo ufw default deny incoming && sudo ufw enable && "
-            "sudo systemctl enable --now ufw`, or use nftables/firewalld.",
+            _firewall_hint(ctx),
             references=["https://wiki.archlinux.org/title/Uncomplicated_Firewall",
                         "https://wiki.archlinux.org/title/Nftables"],
         )
     return bool(running) or has_rules
+
+
+def _firewall_hint(ctx: Context) -> str:
+    match ctx.platform.family:
+        case "fedora":
+            return "`sudo systemctl enable --now firewalld` (Fedora's default firewall)."
+        case "debian":
+            return ("Enable a simple default-deny inbound firewall: `sudo apt install ufw && "
+                    "sudo ufw default deny incoming && sudo ufw enable`.")
+    return ("Enable a simple default-deny inbound firewall, e.g. `sudo pacman -S ufw && "
+            "sudo ufw default deny incoming && sudo ufw enable && "
+            "sudo systemctl enable --now ufw`, or use nftables/firewalld.")
+
+
+SSH_UNITS = ("sshd.service", "ssh.service")  # Arch/Fedora, Debian/Ubuntu
 
 
 def _listeners(ctx: Context, note: Note, firewall_active: bool) -> int | None:
@@ -282,14 +295,15 @@ def report_listeners(ctx: Context, note: Note, listeners: list[Listener],
 def _ssh(ctx: Context) -> Note:
     note = Note("SSH Server", CAT, tags=["network", "ssh"])
     ctx.set_note(note.title)
-    if not (ctx.exists("/usr/bin/sshd") or ctx.has("sshd")):
+    if not (ctx.exists("/usr/bin/sshd") or ctx.exists("/usr/sbin/sshd") or ctx.has("sshd")):
         note.summary = "OpenSSH server not installed"
         note.add(md.callout("success", "Not installed", "No SSH server attack surface."))
         return note
 
-    states = unit_states(ctx, ["sshd.service"])
-    enabled = unit_states(ctx, ["sshd.service"], verb="is-enabled")
-    running = states.get("sshd.service") == "active"
+    states = unit_states(ctx, SSH_UNITS)
+    enabled = unit_states(ctx, SSH_UNITS, verb="is-enabled")
+    running = any(s == "active" for s in states.values())
+    unit = next((u for u in SSH_UNITS if states.get(u) == "active"), SSH_UNITS[0])
     source = "sshd_config files"
     opts: dict[str, str] = {}
     # `sshd -T` needs host keys, so on a machine where sshd was installed but
@@ -323,8 +337,8 @@ def _ssh(ctx: Context) -> Note:
     }
     note.summary = f"sshd {'running' if running else 'not running'}, " \
                    f"root login: {settings['PermitRootLogin']}"
-    note.add(md.kv_table([("Service state", states.get("sshd.service", "unknown")),
-                          ("Enabled at boot", enabled.get("sshd.service", "unknown")),
+    note.add(md.kv_table([("Service state", states.get(unit, "unknown")),
+                          ("Enabled at boot", enabled.get(unit, "unknown")),
                           ("Settings source", source)]),
              md.heading("Settings"), md.kv_table(list(settings.items())))
     if not running:

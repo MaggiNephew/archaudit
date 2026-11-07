@@ -5,17 +5,21 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from collections.abc import Iterator
 from typing import Any
 
 from archaudit import md
+from archaudit.collectors._pkg import NOT_OWNED, owners
 from archaudit.core import Context, GapKind, Note, Severity
 
 CAT = "Filesystem"
 REAL_FS = {"ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "vfat", "exfat", "zfs",
            "bcachefs", "jfs", "reiserfs", "ntfs3", "fuseblk"}
 
-# SUID/SGID binaries shipped by common Arch packages.
+# SUID/SGID binaries shipped by common Arch, Debian/Ubuntu and Fedora packages.
+# (Files owned by a package are reported with that package either way; this
+# list only decides what counts as "not on the known list".)
 KNOWN_SUID = {
     "/usr/bin/sudo", "/usr/bin/su", "/usr/bin/passwd", "/usr/bin/chsh", "/usr/bin/chfn",
     "/usr/bin/gpasswd", "/usr/bin/newgrp", "/usr/bin/mount", "/usr/bin/umount",
@@ -34,6 +38,20 @@ KNOWN_SUID = {
     "/usr/lib/virtualbox/VBoxNetDHCP", "/usr/lib/virtualbox/VBoxNetNAT",
     "/usr/lib/virtualbox/VBoxSDL", "/usr/bin/sudoedit", "/usr/bin/screen",
     "/usr/bin/cardmgr", "/usr/lib/opensmtpd/smtpctl",
+    # Debian / Ubuntu
+    "/usr/lib/openssh/ssh-keysign", "/usr/lib/eject/dmcrypt-get-device",
+    "/usr/lib/policykit-1/polkit-agent-helper-1", "/usr/sbin/pppd", "/usr/sbin/unix_chkpwd",
+    "/usr/bin/ssh-agent", "/usr/bin/dotlockfile", "/usr/bin/bsd-write", "/usr/bin/ntfs-3g",
+    "/usr/lib/snapd/snap-confine", "/usr/lib/x86_64-linux-gnu/utempter/utempter",
+    "/usr/sbin/mount.nfs", "/usr/sbin/mount.cifs", "/usr/lib/xorg/Xorg.wrap",
+    "/usr/sbin/pam_extrausers_chkpwd",
+    # Fedora / RHEL
+    "/usr/libexec/openssh/ssh-keysign", "/usr/libexec/polkit-1/polkit-agent-helper-1",
+    "/usr/libexec/dbus-1/dbus-daemon-launch-helper",
+    "/usr/sbin/pam_timestamp_check", "/usr/sbin/userhelper", "/usr/sbin/grub2-set-bootflag",
+    "/usr/libexec/utempter/utempter", "/usr/libexec/Xorg.wrap", "/usr/bin/vmware-user",
+    "/usr/libexec/qemu-bridge-helper",
+    "/usr/libexec/spice-gtk-x86_64/spice-client-glib-usb-acl-helper",
 }
 SUID_SCAN_ROOTS = ("/usr/bin", "/usr/lib", "/usr/local", "/opt", "/home", "/tmp", "/var/tmp",
                    "/srv")
@@ -142,6 +160,8 @@ def _storage(ctx: Context, note: Note) -> None:
         parts = line.split()
         if len(parts) < 3 or parts[2] not in REAL_FS:
             continue
+        if sys.platform == "win32":  # this collector only runs on Linux
+            break
         try:
             sv = os.statvfs(ctx.path(parts[1]))
         except OSError:
@@ -157,8 +177,10 @@ def _storage(ctx: Context, note: Note) -> None:
     if full:
         ctx.finding("Filesystem nearly full", Severity.LOW, CAT,
                     "Full disks break updates (partial upgrades), logging and databases.",
-                    "Free space: `sudo paccache -rk2`, `journalctl --vacuum-size=200M`, "
-                    "remove orphans.", evidence="\n".join(full))
+                    "Free space: clear the package cache (`sudo paccache -rk2` / "
+                    "`sudo apt clean` / `sudo dnf clean packages`), "
+                    "`sudo journalctl --vacuum-size=200M`, remove unneeded packages.",
+                    evidence="\n".join(full))
 
 
 def _mounts(ctx: Context, note: Note) -> None:
@@ -210,12 +232,12 @@ def _suid(ctx: Context, note: Note) -> None:
                 found.append((path, kind, stat.filemode(st.st_mode)))
     found = sorted(set(found))
     unknown = [f for f in found if f[0] not in KNOWN_SUID]
-    owners = _owners(ctx, [f[0] for f in unknown])
+    owned_by = owners(ctx, [f[0] for f in unknown])
     risky_dirs = ("/home/", "/tmp/", "/var/tmp/", "/dev/shm/", "/srv/")
 
     rows: list[tuple[str, str, str, str]] = []
     for path, kind, mode in found:
-        status = "known" if path in KNOWN_SUID else owners.get(path, "unknown")
+        status = "known" if path in KNOWN_SUID else owned_by.get(path, "unknown")
         rows.append((path, kind, mode, status))
     note.summary = f"{len(found)} SUID/SGID files, {len(unknown)} not on the known list"
     note.add(md.heading("SUID / SGID executables"),
@@ -230,30 +252,14 @@ def _suid(ctx: Context, note: Note) -> None:
                     "privilege-escalation backdoor.",
                     "Investigate each file; remove the bit with `sudo chmod u-s,g-s <file>` or "
                     "delete it.", evidence="\n".join(in_risky))
-    unowned = [p for p, _, _ in found if owners.get(p) == "not owned by any package"
+    unowned = [p for p, _, _ in found if owned_by.get(p) == NOT_OWNED
                and not p.startswith(risky_dirs)]
     if unowned:
         ctx.finding("SUID/SGID executables not owned by any package", Severity.MEDIUM, CAT,
-                    "These privileged binaries were not installed by pacman, so nothing keeps "
-                    "them updated or verifies their integrity.",
+                    "These privileged binaries were not installed by the package manager, so "
+                    "nothing keeps them updated or verifies their integrity.",
                     "Confirm their origin; remove the SUID bit or the file if not needed.",
                     evidence="\n".join(unowned))
-
-
-def _owners(ctx: Context, paths: list[str]) -> dict[str, str]:
-    """Map files to their owning package with one ``pacman -Qo`` call."""
-    if not paths or not ctx.has("pacman") or str(ctx.root) != "/":
-        return {}
-    res = ctx.runner.run(["pacman", "-Qo", *paths], ctx.timeout, ok_codes=(0, 1))
-    owners: dict[str, str] = {}
-    for line in (res.stdout + "\n" + res.stderr).splitlines():
-        if " is owned by " in line:
-            path, _, pkg = line.partition(" is owned by ")
-            owners[path.strip()] = pkg.strip()
-        elif line.startswith("error: No package owns "):
-            owners[line.removeprefix("error: No package owns ").strip()] = \
-                "not owned by any package"
-    return owners
 
 
 def _world_writable(ctx: Context, note: Note) -> None:

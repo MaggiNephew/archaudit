@@ -61,7 +61,8 @@ def collect_logs(ctx: Context) -> list[Note]:
 
 
 def _ssh_auth(ctx: Context, note: Note) -> int:
-    text = _journal(ctx, ["-o", "cat", "--since", "-30d", "-u", "sshd.service"],
+    text = _journal(ctx, ["-o", "cat", "--since", "-30d", "-u", "sshd.service",
+                          "-u", "ssh.service"],
                     "SSH login attempts (30 days)")
     if not text:
         return 0

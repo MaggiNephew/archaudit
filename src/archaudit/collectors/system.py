@@ -53,9 +53,9 @@ def collect_overview(ctx: Context) -> list[Note]:
     osr = parse_os_release(ctx.read("/etc/os-release", category=CAT, what="OS release",
                                     required=True) or "")
     distro_id = osr.get("ID", "unknown")
-    is_arch = distro_id == "arch" or "arch" in osr.get("ID_LIKE", "").split()
+    family = ctx.platform.family
     ctx.facts["distro"] = osr.get("PRETTY_NAME", distro_id)
-    ctx.facts["is_arch"] = "yes" if is_arch else "no"
+    ctx.facts["is_arch"] = "yes" if family == "arch" else "no"
 
     hostname = (ctx.read("/etc/hostname") or socket.gethostname()).strip()
     ctx.facts["hostname"] = hostname
@@ -88,7 +88,8 @@ def collect_overview(ctx: Context) -> list[Note]:
         md.kv_table([
             ("Hostname", hostname),
             ("Distribution", ctx.facts["distro"]),
-            ("Arch-based", "yes" if is_arch else "**no** — checks are tuned for Arch"),
+            ("Distribution family", family if family != "linux" else
+             "**unknown** — generic Linux checks only"),
             ("Build ID", osr.get("BUILD_ID")),
             ("Kernel", uname.release),
             ("Architecture", uname.machine),
@@ -102,9 +103,10 @@ def collect_overview(ctx: Context) -> list[Note]:
             ("Audit ran as root", "yes" if ctx.is_root else "no (some checks limited)"),
         ]),
     )
-    if not is_arch:
-        note.add(md.callout("warning", "Not an Arch-based system",
-                            "Package and pacman checks will be missing or inaccurate."))
+    if family == "linux":
+        note.add(md.callout("warning", "Unrecognised distribution",
+                            "Supported families are Arch, Debian/Ubuntu and Fedora/RHEL. "
+                            "Package checks may be missing or inaccurate."))
     return [note]
 
 

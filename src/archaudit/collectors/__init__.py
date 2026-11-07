@@ -1,5 +1,6 @@
-"""Collector registry. Order matters: later collectors may use facts
-(``ctx.facts``) recorded by earlier ones (e.g. CPU vendor, laptop)."""
+"""Collector registries per operating system. Order matters: later
+collectors may use facts (``ctx.facts``) recorded by earlier ones (e.g. CPU
+vendor, laptop)."""
 
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from archaudit.collectors.services import collect_services
 from archaudit.collectors.system import collect_hardware, collect_overview
 from archaudit.collectors.users import collect_users
 from archaudit.core import Collector
+from archaudit.platforms import Platform
 
 COLLECTORS: dict[str, Collector] = {
     "overview": collect_overview,
@@ -25,4 +27,12 @@ COLLECTORS: dict[str, Collector] = {
     "logs": collect_logs,
 }
 
-__all__ = ["COLLECTORS"]
+LINUX_COLLECTORS = COLLECTORS
+WINDOWS_COLLECTORS: dict[str, Collector] = {}
+
+
+def collectors_for(platform: Platform) -> dict[str, Collector]:
+    return WINDOWS_COLLECTORS if platform.is_windows else LINUX_COLLECTORS
+
+
+__all__ = ["COLLECTORS", "LINUX_COLLECTORS", "WINDOWS_COLLECTORS", "collectors_for"]

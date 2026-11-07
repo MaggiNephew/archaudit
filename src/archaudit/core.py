@@ -23,34 +23,17 @@ from enum import IntEnum, StrEnum
 from pathlib import Path
 from typing import Protocol
 
+from archaudit.platforms import Platform, detect, is_admin
+
 logger = logging.getLogger(__name__)
 
 MAX_RAW_BYTES = 256 * 1024  # cap stored raw output per command
 
-# Which Arch package provides a command, for "how to fix" hints.
-PACKAGE_FOR_COMMAND: dict[str, str] = {
-    "arch-audit": "arch-audit",
-    "checkupdates": "pacman-contrib",
-    "lspci": "pciutils",
-    "lsusb": "usbutils",
-    "ss": "iproute2",
-    "ip": "iproute2",
-    "lsblk": "util-linux",
-    "lscpu": "util-linux",
-    "last": "util-linux",
-    "bootctl": "systemd",
-    "nft": "nftables",
-    "flatpak": "flatpak",
-    "sshd": "openssh",
-    "timedatectl": "systemd",
-    "systemctl": "systemd",
-    "journalctl": "systemd",
-    "coredumpctl": "systemd",
-}
-
 _DENIED_MARKERS = (
     "permission denied", "operation not permitted", "must be root", "access denied",
     "you need to be root", "are not allowed", "insufficient privileges",
+    "access is denied", "requires elevation", "unauthorizedaccess",
+    "must be an administrator", "administrator privilege",
 )
 
 
@@ -137,6 +120,7 @@ class Gap:
     kind: GapKind
     detail: str = ""
     fix: str = ""
+    package: str = ""  # package that would provide a missing tool
 
 
 @dataclass(slots=True)
@@ -188,23 +172,41 @@ class Runner(Protocol):
 
 
 class SubprocessRunner:
-    """Runs fixed argv lists - never through a shell - with a C locale."""
+    """Runs fixed argv lists - never through a shell - with a fixed PATH and a
+    minimal environment, so a hostile PATH or locale cannot change results."""
 
-    SEARCH_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin"
+    LINUX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin"
+    # Windows: only system directories, so a planted powershell.exe elsewhere
+    # on PATH (e.g. in a user-writable folder) is never picked up.
+    WINDOWS_DIRS = ("System32", "System32\\WindowsPowerShell\\v1.0", "System32\\wbem", "")
+    WINDOWS_ENV = ("SystemRoot", "windir", "SystemDrive", "ProgramData", "ProgramFiles",
+                   "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "COMPUTERNAME",
+                   "USERNAME", "USERDOMAIN", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP",
+                   "TMP", "PATHEXT", "ComSpec", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+                   "OS")
 
-    def __init__(self) -> None:
-        self._env = {
-            "PATH": self.SEARCH_PATH,
-            "LC_ALL": "C",
-            "LANG": "C",
-            "SYSTEMD_COLORS": "0",
-            "SYSTEMD_PAGER": "",
-            "NO_COLOR": "1",
-            "HOME": os.environ.get("HOME", "/root"),
-        }
+    def __init__(self, windows: bool | None = None) -> None:
+        self.windows = os.name == "nt" if windows is None else windows
+        if self.windows:
+            root = os.environ.get("SystemRoot", r"C:\Windows")  # noqa: SIM112 - Windows casing
+            self.search_path = ";".join(
+                f"{root}\\{d}" if d else root for d in self.WINDOWS_DIRS)
+            self._env = {k: os.environ[k] for k in self.WINDOWS_ENV if k in os.environ}
+            self._env |= {"PATH": self.search_path, "NO_COLOR": "1"}
+        else:
+            self.search_path = self.LINUX_PATH
+            self._env = {
+                "PATH": self.search_path,
+                "LC_ALL": "C",
+                "LANG": "C",
+                "SYSTEMD_COLORS": "0",
+                "SYSTEMD_PAGER": "",
+                "NO_COLOR": "1",
+                "HOME": os.environ.get("HOME", "/root"),
+            }
 
     def which(self, name: str) -> str | None:
-        return shutil.which(name, path=self.SEARCH_PATH)
+        return shutil.which(name, path=self.search_path)
 
     def run(self, argv: Sequence[str], timeout: float,
             ok_codes: Sequence[int]) -> CommandResult:
@@ -213,18 +215,20 @@ class SubprocessRunner:
         if exe is None:
             return CommandResult(args, CmdStatus.MISSING)
         started = time.monotonic()
+        # Windows: no console window flashing up for each command.
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if self.windows else 0
         try:
             proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
                 [exe, *args[1:]], capture_output=True, timeout=timeout,
-                env=self._env, stdin=subprocess.DEVNULL, check=False,
+                env=self._env, stdin=subprocess.DEVNULL, check=False, creationflags=flags,
             )
         except subprocess.TimeoutExpired:
             return CommandResult(args, CmdStatus.TIMEOUT, duration=timeout)
         except OSError as exc:
             return CommandResult(args, CmdStatus.FAILED, stderr=str(exc))
         duration = round(time.monotonic() - started, 3)
-        out = proc.stdout.decode("utf-8", errors="replace")
-        err = proc.stderr.decode("utf-8", errors="replace")
+        out = proc.stdout.decode("utf-8", errors="replace").removeprefix("\ufeff")
+        err = proc.stderr.decode("utf-8", errors="replace").removeprefix("\ufeff")
         if proc.returncode in ok_codes:
             status = CmdStatus.OK
         elif any(m in err.lower() for m in _DENIED_MARKERS):
@@ -256,17 +260,24 @@ class Context:
         offline: bool = False,
         deep: bool = False,
         timeout: float = 60.0,
+        platform: Platform | None = None,
     ) -> None:
         self.root = root
-        self.runner: Runner = runner or SubprocessRunner()
-        self.is_root = os.geteuid() == 0 if is_root is None else is_root
+        self.platform = platform or detect(root)
+        self.runner: Runner = runner or SubprocessRunner(windows=self.platform.is_windows)
+        # "root" means administrator on Windows throughout the code.
+        self.is_root = is_admin() if is_root is None else is_root
         self.offline = offline
         self.deep = deep
         self.timeout = timeout
         self.findings: list[Finding] = []
         self.gaps: list[Gap] = []
         self.raw: list[RawOutput] = []
-        self.facts: dict[str, str] = {}   # key facts shared between collectors/dashboard
+        self.facts: dict[str, str] = {   # key facts shared between collectors/dashboard
+            "platform": self.platform.family,
+            "elevate_hint": self.platform.elevate_hint,
+            "install_cmd": self.platform.install_cmd,
+        }
         self._current_note = ""
 
     # -- bookkeeping -----------------------------------------------------
@@ -283,10 +294,10 @@ class Context:
         return f
 
     def gap(self, item: str, category: str, kind: GapKind, detail: str = "",
-            fix: str = "") -> None:
+            fix: str = "", package: str = "") -> None:
         if not fix and kind is GapKind.NEEDS_ROOT:
-            fix = "Re-run with `sudo archaudit`"
-        self.gaps.append(Gap(item, category, kind, detail, fix))
+            fix = self.platform.elevate_hint
+        self.gaps.append(Gap(item, category, kind, detail, fix, package))
         logger.debug("gap", extra={"item": item, "kind": kind.value})
 
     # -- files -----------------------------------------------------------
@@ -339,15 +350,18 @@ class Context:
         timeout: float | None = None,
         needs_root: bool = False,
         quiet_missing: bool = False,
+        label: str | None = None,
     ) -> CommandResult | None:
         """Run a command; on failure record a gap and return ``None``.
 
         ``needs_root``: skip (with a gap) when not root, instead of producing
-        partial or misleading output.
+        partial or misleading output. ``label``: how the command is shown in
+        the report (for long PowerShell scripts).
         """
-        command = " ".join(argv)
+        command = label or " ".join(argv)
         if needs_root and not self.is_root:
-            self.gap(what, category, GapKind.NEEDS_ROOT, f"`{command}` requires root")
+            self.gap(what, category, GapKind.NEEDS_ROOT, f"`{command}` requires "
+                     + ("administrator rights" if self.platform.is_windows else "root"))
             return None
         result = self.runner.run(argv, timeout or self.timeout, ok_codes)
         if raw_name and result.status in (CmdStatus.OK, CmdStatus.FAILED):
@@ -361,10 +375,9 @@ class Context:
                 return result
             case CmdStatus.MISSING:
                 if not quiet_missing:
-                    pkg = PACKAGE_FOR_COMMAND.get(argv[0])
-                    fix = f"`sudo pacman -S {pkg}`" if pkg else f"install `{argv[0]}`"
+                    fix, pkg = self.platform.install_hint(argv[0])
                     self.gap(what, category, GapKind.MISSING_TOOL,
-                             f"`{argv[0]}` not found", fix)
+                             f"`{argv[0]}` not found", fix, pkg)
             case CmdStatus.DENIED:
                 self.gap(what, category, GapKind.NEEDS_ROOT, f"`{command}`: permission denied")
             case CmdStatus.TIMEOUT:

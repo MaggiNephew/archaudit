@@ -3,14 +3,31 @@
 from __future__ import annotations
 
 import platform
+import re
 from dataclasses import dataclass
 
 from archaudit import md
+from archaudit.collectors._pkg import installed_versions, manager
 from archaudit.core import Context, GapKind, Note, Severity
 
 CAT = "Kernel & Boot"
 SECURE_BOOT_VAR = "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
-KERNEL_PACKAGES = ("linux", "linux-lts", "linux-zen", "linux-hardened", "linux-rt")
+KERNEL_PACKAGES = {
+    "arch": ("linux", "linux-lts", "linux-zen", "linux-hardened", "linux-rt"),
+    "debian": ("linux-image-amd64", "linux-image-arm64", "linux-image-generic",
+               "linux-image-generic-hwe-24.04", "linux-image-generic-hwe-22.04"),
+    "fedora": ("kernel", "kernel-core"),
+}
+MICROCODE = {
+    "arch": {"GenuineIntel": "intel-ucode", "AuthenticAMD": "amd-ucode"},
+    "debian": {"GenuineIntel": "intel-microcode", "AuthenticAMD": "amd64-microcode"},
+    "fedora": {"GenuineIntel": "microcode_ctl"},  # AMD microcode ships in linux-firmware
+}
+
+
+def _version_key(release: str) -> list[int | str]:
+    """Natural sort key: 6.10.2 > 6.9.12."""
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", release)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,17 +79,6 @@ def _sysctl_path(key: str) -> str:
     return "/proc/sys/" + key.replace(".", "/")
 
 
-def _pacman_versions(ctx: Context, names: tuple[str, ...]) -> dict[str, str]:
-    """Return {pkg: version} for installed packages among ``names``."""
-    res = ctx.runner.run(["pacman", "-Q", *names], ctx.timeout, ok_codes=(0, 1))
-    versions: dict[str, str] = {}
-    for line in res.stdout.splitlines():
-        parts = line.split()
-        if len(parts) == 2:
-            versions[parts[0]] = parts[1]
-    return versions
-
-
 def collect_kernel(ctx: Context) -> list[Note]:
     note = Note("Kernel & Boot", CAT, tags=["kernel", "boot"])
     ctx.set_note(note.title)
@@ -81,20 +87,11 @@ def collect_kernel(ctx: Context) -> list[Note]:
     if not release and str(ctx.root) == "/":
         release = platform.release()
     cmdline = (ctx.read("/proc/cmdline") or "").strip()
-    installed = _pacman_versions(ctx, KERNEL_PACKAGES) if ctx.has("pacman") else {}
-    module_dirs = ctx.listdir("/usr/lib/modules")
+    family = ctx.platform.family
+    installed = installed_versions(ctx, KERNEL_PACKAGES.get(family, ()))
+    module_dirs = ctx.listdir("/usr/lib/modules") or ctx.listdir("/lib/modules")
     tainted = (ctx.read("/proc/sys/kernel/tainted") or "0").strip()
-
-    # Arch removes the old modules directory on kernel upgrade, so a running
-    # release without a matching directory means "upgraded, not rebooted".
-    if release and module_dirs and release not in module_dirs:
-        ctx.finding(
-            "Kernel upgraded but system not rebooted", Severity.MEDIUM, CAT,
-            "The running kernel's modules are no longer installed. Security fixes in "
-            "the new kernel are not active, and loading new modules will fail.",
-            "Reboot to start the updated kernel.",
-            evidence=f"running {release}; installed module dirs: {', '.join(module_dirs)}",
-        )
+    _reboot_needed(ctx, release, module_dirs)
 
     flags = cmdline.split()
     if "mitigations=off" in flags:
@@ -129,11 +126,38 @@ def collect_kernel(ctx: Context) -> list[Note]:
     )
 
     _cpu_vulnerabilities(ctx, note)
-    _microcode(ctx, note, installed_kernel=bool(installed))
+    _microcode(ctx, note, installed_kernel=bool(installed) or bool(module_dirs))
     _security_modules(ctx, note)
     _boot(ctx, note)
     _sysctl(ctx, note)
     return [note]
+
+
+def _reboot_needed(ctx: Context, release: str, module_dirs: list[str]) -> None:
+    evidence = ""
+    if ctx.platform.family == "arch":
+        # Arch removes the old modules directory on kernel upgrade, so a running
+        # release without a matching directory means "upgraded, not rebooted".
+        if release and module_dirs and release not in module_dirs:
+            evidence = f"running {release}; installed module dirs: {', '.join(module_dirs)}"
+    else:
+        # Other distributions keep several kernels; a newer one than the running
+        # kernel means an update is waiting for a reboot.
+        newest = max(module_dirs, key=_version_key) if module_dirs else ""
+        if release and newest and _version_key(newest) > _version_key(release):
+            evidence = f"running {release}; newest installed {newest}"
+        if ctx.exists("/run/reboot-required") or ctx.exists("/var/run/reboot-required"):
+            pkgs = (ctx.read("/run/reboot-required.pkgs") or "").split()
+            evidence = "\n".join(filter(None, [evidence, "/run/reboot-required is present"
+                                               + (f" ({', '.join(pkgs[:10])})" if pkgs else "")]))
+    if evidence:
+        ctx.finding(
+            "Kernel upgraded but system not rebooted", Severity.MEDIUM, CAT,
+            "An updated kernel (or core library) is installed but the old one is still "
+            "running, so its security fixes are not active.",
+            "Reboot to start the updated kernel.",
+            evidence=evidence, key="reboot-kernel",
+        )
 
 
 def _cpu_vulnerabilities(ctx: Context, note: Note) -> None:
@@ -176,10 +200,10 @@ def _microcode(ctx: Context, note: Note, installed_kernel: bool) -> None:
             if line.startswith("vendor_id"):
                 vendor = line.split(":", 1)[1].strip()
                 break
-    pkg = {"GenuineIntel": "intel-ucode", "AuthenticAMD": "amd-ucode"}.get(vendor)
-    if not pkg or not ctx.has("pacman"):
+    pkg = MICROCODE.get(ctx.platform.family, {}).get(vendor)
+    if not pkg or not manager(ctx):
         return
-    present = pkg in _pacman_versions(ctx, (pkg,))
+    present = pkg in installed_versions(ctx, (pkg,))
     note.add(md.heading("Microcode"),
              md.kv_table([("CPU vendor", vendor),
                           ("Microcode package",
@@ -190,8 +214,10 @@ def _microcode(ctx: Context, note: Note, installed_kernel: bool) -> None:
             "Microcode updates fix CPU bugs and are required for several Spectre-class "
             "mitigations. Without the package, only the (often outdated) firmware "
             "microcode is used.",
-            f"`sudo pacman -S {pkg}`, then make sure your bootloader loads it "
-            "(mkinitcpio `microcode` hook or an initrd entry) and reboot.",
+            f"`{ctx.platform.install_cmd} {pkg}`"
+            + (", then make sure your bootloader loads it (mkinitcpio `microcode` hook or an "
+               "initrd entry) and reboot." if ctx.platform.family == "arch" else
+               ", then reboot."),
             references=["https://wiki.archlinux.org/title/Microcode"],
         )
 
@@ -206,13 +232,24 @@ def _security_modules(ctx: Context, note: Note) -> None:
                           ("Mandatory access control", ", ".join(mac) or "none"),
                           ("Kernel lockdown", lockdown or "unknown")]))
     if lsm and not mac:
+        family = ctx.platform.family
+        if family == "arch":
+            why = "Arch does not enable a MAC framework by default."
+            fix = ("Optional hardening: install `apparmor`, add `lsm=landlock,lockdown,yama,"
+                   "integrity,apparmor,bpf` to the kernel command line and enable "
+                   "`apparmor.service`.")
+        elif family == "fedora":
+            why = "Fedora ships with SELinux enforcing; it has been disabled on this system."
+            fix = ("Re-enable SELinux: set `SELINUX=enforcing` in `/etc/selinux/config`, "
+                   "run `sudo touch /.autorelabel` and reboot.")
+        else:
+            why = "Debian and Ubuntu enable AppArmor by default; it is not active here."
+            fix = ("`sudo apt install apparmor apparmor-utils`, make sure `apparmor=0` is not "
+                   "on the kernel command line, and `sudo systemctl enable --now apparmor`.")
         ctx.finding(
-            "No mandatory access control (AppArmor/SELinux) active", Severity.LOW, CAT,
-            "Arch does not enable a MAC framework by default. AppArmor can confine "
-            "network-facing and untrusted programs.",
-            "Optional hardening: install `apparmor`, add `lsm=landlock,lockdown,yama,"
-            "integrity,apparmor,bpf` to the kernel command line and enable "
-            "`apparmor.service`.",
+            "No mandatory access control (AppArmor/SELinux) active",
+            Severity.LOW if family in ("arch", "linux") else Severity.MEDIUM, CAT,
+            why + " AppArmor/SELinux confine network-facing and untrusted programs.", fix,
             references=["https://wiki.archlinux.org/title/AppArmor"],
         )
 
@@ -249,9 +286,14 @@ def _boot(ctx: Context, note: Note) -> None:
         ctx.finding(
             "Secure Boot is disabled", Severity.LOW, CAT,
             "Without Secure Boot an attacker with physical or root access can tamper with "
-            "the bootloader or kernel unnoticed. On Arch this requires enrolling your own "
-            "keys, so it is common to leave it off.",
-            "Optional: set up Secure Boot with `sbctl` and signed unified kernel images.",
+            "the bootloader or kernel unnoticed."
+            + (" On Arch this requires enrolling your own keys, so it is common to leave it "
+               "off." if ctx.platform.family == "arch" else
+               " Debian, Ubuntu and Fedora support it out of the box through the signed shim."),
+            "Optional: set up Secure Boot with `sbctl` and signed unified kernel images."
+            if ctx.platform.family == "arch" else
+            "Enable Secure Boot in the firmware setup (the distribution's shim is already "
+            "signed); DKMS modules such as NVIDIA need a MOK key.",
             references=["https://wiki.archlinux.org/title/Unified_Extensible_Firmware_"
                         "Interface/Secure_Boot"],
         )

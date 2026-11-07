@@ -109,9 +109,10 @@ RESPONSES: dict[tuple[str, ...], tuple[int, str, str]] = {
         'tcp LISTEN 0 511 0.0.0.0:6379 0.0.0.0:* users:(("redis-server",pid=9,fd=6))\n'
         "tcp LISTEN 0 128 127.0.0.1:631 0.0.0.0:*\n"
         "udp UNCONN 0 0 127.0.0.53%lo:53 0.0.0.0:*\n", ""),
-    ("systemctl", "is-active", "--", "sshd.service"): (0, "active\n", ""),
-    ("systemctl", "is-enabled", "--", "sshd.service"): (0, "enabled\n", ""),
-    ("journalctl", "-q", "--no-pager", "-o", "cat", "--since", "-30d", "-u", "sshd.service"): (0,
+    ("systemctl", "is-active", "--", "sshd.service", "ssh.service"): (3, "active\ninactive\n", ""),
+    ("systemctl", "is-enabled", "--", "sshd.service", "ssh.service"): (1, "enabled\nnot-found\n", ""),
+    ("journalctl", "-q", "--no-pager", "-o", "cat", "--since", "-30d", "-u", "sshd.service",
+     "-u", "ssh.service"): (0,
         "".join(f"Failed password for invalid user admin from 203.0.113.{i % 3} port 22 ssh2\n"
                 for i in range(25)) + "Accepted publickey for alice from 192.0.2.5 port 50 ssh2\n",
         ""),

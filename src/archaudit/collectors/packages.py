@@ -1,5 +1,8 @@
 """Package inventory and package-level vulnerability checks.
 
+Dispatches to the backend for the platform: pacman (below), apt
+(:mod:`pkg_apt`) or dnf (:mod:`pkg_dnf`). The pacman backend:
+
 * ``arch-audit`` maps installed packages to the Arch Security Tracker (CVEs).
 * ``checkupdates`` (pacman-contrib) lists pending updates without touching the
   real sync database.
@@ -15,6 +18,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from archaudit import md
+from archaudit.collectors._pkg import add_extra_formats, manager
+from archaudit.collectors.pkg_apt import collect_apt
+from archaudit.collectors.pkg_dnf import collect_dnf
 from archaudit.core import Context, GapKind, Note, Severity
 
 CAT = "Packages"
@@ -119,17 +125,26 @@ def last_full_upgrade(log_text: str) -> datetime | None:
 
 
 def collect_packages(ctx: Context) -> list[Note]:
+    match manager(ctx):
+        case "dpkg" if ctx.has("apt-get"):
+            return collect_apt(ctx)
+        case "rpm" if ctx.has("dnf") or ctx.has("dnf5"):
+            return collect_dnf(ctx)
+        case "pacman":
+            return collect_pacman(ctx)
+    note = Note("Packages", CAT, tags=["packages"])
+    ctx.gap("Package inventory", CAT, GapKind.NOT_PRESENT,
+            "no supported package manager found (pacman, apt/dpkg, dnf/rpm)")
+    note.summary = "no supported package manager"
+    note.add(md.callout("failure", "No supported package manager",
+                        "Package and vulnerability checks were skipped."))
+    return [note]
+
+
+def collect_pacman(ctx: Context) -> list[Note]:
     note = Note("Packages", CAT, tags=["packages", "pacman"])
     vuln_note = Note("Vulnerable Packages", CAT, tags=["packages", "vulnerabilities", "cve"])
     ctx.set_note(note.title)
-
-    if not ctx.has("pacman"):
-        ctx.gap("Package inventory", CAT, GapKind.NOT_PRESENT,
-                "`pacman` not found - not an Arch-based system")
-        note.summary = "pacman not available"
-        note.add(md.callout("failure", "pacman not found",
-                            "Package checks were skipped."))
-        return [note]
 
     all_pkgs = ctx.cmd(["pacman", "-Q"], category=CAT, what="Installed packages",
                        raw_name="pacman -Q")
@@ -193,11 +208,7 @@ def collect_packages(ctx: Context) -> list[Note]:
                  md.callout("example", f"{len(rows)} packages",
                             md.table(("Package", "Version"), rows), folded=True))
 
-    for extra, argv in (("Flatpak apps", ["flatpak", "list", "--app",
-                                         "--columns=application,version"]),
-                        ("Snap packages", ["snap", "list"])):
-        if res := ctx.cmd(argv, category=CAT, what=extra, quiet_missing=True):
-            note.add(md.heading(extra), md.code(res.stdout))
+    add_extra_formats(ctx, note, CAT)
 
     ctx.set_note(vuln_note.title)
     _vulnerabilities(ctx, vuln_note)
