@@ -1,4 +1,4 @@
-"""archaudit - read-only security and inventory audit for Arch Linux.
+"""archaudit - read-only security and inventory audit for Linux and Windows.
 
 Collects as much system information as the current privileges allow, runs
 defensive security checks (vulnerable packages, pending updates, kernel and
@@ -12,4 +12,4 @@ commands with fixed arguments.
 
 __all__ = ["__version__"]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

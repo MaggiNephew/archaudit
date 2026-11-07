@@ -178,7 +178,10 @@ class SubprocessRunner:
     LINUX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin"
     # Windows: only system directories, so a planted powershell.exe elsewhere
     # on PATH (e.g. in a user-writable folder) is never picked up.
-    WINDOWS_DIRS = ("System32", "System32\\WindowsPowerShell\\v1.0", "System32\\wbem", "")
+    # "Sysnative" only exists for 32-bit processes on 64-bit Windows and reaches
+    # the 64-bit PowerShell (the 32-bit one lacks e.g. Get-LocalUser).
+    WINDOWS_DIRS = ("Sysnative\\WindowsPowerShell\\v1.0", "System32\\WindowsPowerShell\\v1.0",
+                    "System32", "System32\\wbem", "")
     WINDOWS_ENV = ("SystemRoot", "windir", "SystemDrive", "ProgramData", "ProgramFiles",
                    "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "COMPUTERNAME",
                    "USERNAME", "USERDOMAIN", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP",
@@ -262,8 +265,11 @@ class Context:
         timeout: float = 60.0,
         platform: Platform | None = None,
     ) -> None:
-        self.root = root
         self.platform = platform or detect(root)
+        if self.platform.is_windows and root == Path("/"):
+            # file reads (e.g. /ProgramData/ssh/sshd_config) are relative to C:\
+            root = Path(os.environ.get("SystemDrive", "C:") + "\\")  # noqa: SIM112
+        self.root = root
         self.runner: Runner = runner or SubprocessRunner(windows=self.platform.is_windows)
         # "root" means administrator on Windows throughout the code.
         self.is_root = is_admin() if is_root is None else is_root

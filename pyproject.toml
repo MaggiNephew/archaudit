@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "archaudit"
-version = "1.0.0"
-description = "Read-only security & inventory audit for Arch Linux, written as an Obsidian vault"
+version = "1.1.0"
+description = "Read-only security & inventory audit for Linux (Arch, Debian/Ubuntu, Fedora/RHEL) and Windows, written as an Obsidian vault"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -35,6 +35,7 @@ ignore = ["S101", "RUF001", "RUF003"]  # asserts in tests; intentional unicode (
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S", "E501"]
 "src/archaudit/collectors/filesystem.py" = ["S108"]  # scans temp dirs, never creates files there
+"src/archaudit/collectors/windows/*" = ["E501"]  # embedded PowerShell scripts
 
 [tool.mypy]
 python_version = "3.12"

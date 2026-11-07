@@ -95,9 +95,10 @@ def parse_ss(text: str) -> list[Listener]:
 
 
 def parse_sshd_config(ctx: Context, path: str = "/etc/ssh/sshd_config",
-                      _seen: set[str] | None = None) -> dict[str, str]:
+                      _seen: set[str] | None = None, base: str = "/etc/ssh") -> dict[str, str]:
     """Effective global sshd options (first value wins, Include expanded,
-    parsing stops at the first ``Match`` block)."""
+    parsing stops at the first ``Match`` block). ``base`` resolves relative
+    Include paths (``/ProgramData/ssh`` on Windows)."""
     seen = _seen if _seen is not None else set()
     if path in seen:
         return {}
@@ -116,12 +117,14 @@ def parse_sshd_config(ctx: Context, path: str = "/etc/ssh/sshd_config",
             break
         if key == "include":
             for pattern in value.split():
-                if not pattern.startswith("/"):
-                    pattern = f"/etc/ssh/{pattern}"
+                pattern = pattern.replace("\\", "/")
+                if not pattern.startswith("/") and ":" not in pattern:
+                    pattern = f"{base}/{pattern}"
                 directory, _, glob = pattern.rpartition("/")
                 for name in ctx.listdir(directory):
                     if fnmatch.fnmatch(name, glob):
-                        for k, v in parse_sshd_config(ctx, f"{directory}/{name}", seen).items():
+                        for k, v in parse_sshd_config(ctx, f"{directory}/{name}", seen,
+                                                      base).items():
                             opts.setdefault(k, v)
             continue
         opts.setdefault(key, value)
@@ -236,8 +239,10 @@ def _listeners(ctx: Context, note: Note, firewall_active: bool) -> int | None:
 
 
 def report_listeners(ctx: Context, note: Note, listeners: list[Listener],
-                     firewall_active: bool, *, partial_processes: bool) -> int:
+                     firewall_active: bool, *, partial_processes: bool,
+                     risky_ports: dict[int, tuple[Severity, str]] | None = None) -> int:
     """Shared by the Linux and Windows network collectors."""
+    risky_ports = RISKY_PORTS if risky_ports is None else risky_ports
     if partial_processes and any(not item.process for item in listeners):
         ctx.gap("Process names for listening ports", CAT, GapKind.NEEDS_ROOT,
                 "only processes owned by the current user are shown")
@@ -256,10 +261,10 @@ def report_listeners(ctx: Context, note: Note, listeners: list[Listener],
 
     risky: dict[int, list[Listener]] = {}
     for (_, port), items in ports.items():
-        if port in RISKY_PORTS:
+        if port in risky_ports:
             risky.setdefault(port, []).extend(items)
     for port, items in sorted(risky.items()):
-        sev, name = RISKY_PORTS[port]
+        sev, name = risky_ports[port]
         first = min(items, key=lambda x: x.scope != "all interfaces")
         names = sorted({x.process for x in items if x.process})
         ctx.finding(

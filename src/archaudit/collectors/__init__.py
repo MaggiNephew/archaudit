@@ -12,6 +12,7 @@ from archaudit.collectors.packages import collect_packages
 from archaudit.collectors.services import collect_services
 from archaudit.collectors.system import collect_hardware, collect_overview
 from archaudit.collectors.users import collect_users
+from archaudit.collectors.windows import WINDOWS
 from archaudit.core import Collector
 from archaudit.platforms import Platform
 
@@ -28,7 +29,7 @@ COLLECTORS: dict[str, Collector] = {
 }
 
 LINUX_COLLECTORS = COLLECTORS
-WINDOWS_COLLECTORS: dict[str, Collector] = {}
+WINDOWS_COLLECTORS: dict[str, Collector] = WINDOWS
 
 
 def collectors_for(platform: Platform) -> dict[str, Collector]:
