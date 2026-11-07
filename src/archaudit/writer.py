@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from archaudit import __version__, md
-from archaudit.core import Finding, Gap, GapKind, Note, RawOutput, Severity
+from archaudit.core import Finding, Gap, GapKind, Note, RawOutput, Severity, legacy_key
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ class VaultWriter:
         self.vault.mkdir(parents=True, exist_ok=True, mode=DIR_MODE)
         if self.vault.is_symlink():
             raise OSError(f"refusing to write into symlinked vault {self.vault}")
-        previous = self._previous_run()
+        previous = self._previous_run(result.hostname)
         run = self._run_dir(result)
         run.mkdir(mode=DIR_MODE)
         for sub in ("System", "Findings", "Raw"):
@@ -349,18 +349,27 @@ class VaultWriter:
                     continue
         return sorted(runs, key=lambda r: str(r[1].get("started", "")), reverse=True)
 
-    def _previous_run(self) -> dict[str, Any] | None:
-        runs = self._runs()
-        return runs[0][1] if runs else None
+    def _previous_run(self, host: str) -> dict[str, Any] | None:
+        """Newest earlier scan of the *same* host (a vault may hold several)."""
+        runs = [data for _, data in self._runs() if data.get("host") == host]
+        return runs[0] if runs else None
 
     def _diff(self, previous: dict[str, Any] | None, findings: list[Finding]
               ) -> tuple[list[Finding], list[dict[str, Any]]] | None:
+        """New and resolved findings. Matches on the stable key; scans written
+        by 1.0.0 stored title-based keys, so those are compared with digits
+        normalised ("7 service socket(s)" == "9 service socket(s)")."""
         if previous is None:
             return None
-        old = {f["key"]: f for f in previous.get("findings", [])}
-        current = {f.key for f in findings}
-        return ([f for f in findings if f.key not in old],
-                [v for k, v in old.items() if k not in current])
+        old = previous.get("findings", [])
+        old_keys = {f.get("key", "") for f in old}
+        old_legacy = {legacy_key(f.get("category", ""), f.get("title", "")) for f in old}
+        new_keys = {f.key for f in findings}
+        new_legacy = {f.legacy_key for f in findings}
+        new = [f for f in findings if f.key not in old_keys and f.legacy_key not in old_legacy]
+        resolved = [f for f in old if f.get("key") not in new_keys
+                    and legacy_key(f.get("category", ""), f.get("title", "")) not in new_legacy]
+        return new, resolved
 
     def _json(self, result: AuditResult, findings: list[Finding]) -> dict[str, Any]:
         return {

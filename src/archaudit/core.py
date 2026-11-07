@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -105,11 +106,26 @@ class Finding:
     references: list[str] = field(default_factory=list)
     source_note: str = ""          # title of the note that produced it
     finding_id: str = ""           # assigned by the writer
+    ident: str = ""                # stable identity; defaults to the title
 
     @property
     def key(self) -> str:
-        """Stable identity used to compare findings across scans."""
-        return f"{self.category}::{self.title}"
+        """Stable identity used to compare findings across scans.
+
+        Titles often contain counts ("7 service socket(s) ..."), so findings
+        whose title varies pass an explicit ``ident`` and keep the same key
+        from scan to scan.
+        """
+        return f"{self.category}::{self.ident or self.title}"
+
+    @property
+    def legacy_key(self) -> str:
+        """Key with digits normalised, to match scans written by 1.0.0."""
+        return legacy_key(self.category, self.title)
+
+
+def legacy_key(category: str, title: str) -> str:
+    return f"{category}::{re.sub(r'[0-9]+', '#', title)}"
 
 
 @dataclass(slots=True)
@@ -259,9 +275,9 @@ class Context:
 
     def finding(self, title: str, severity: Severity, category: str, description: str,
                 remediation: str, evidence: str = "",
-                references: Sequence[str] = ()) -> Finding:
+                references: Sequence[str] = (), key: str = "") -> Finding:
         f = Finding(title, severity, category, description, remediation, evidence,
-                    list(references), self._current_note)
+                    list(references), self._current_note, ident=key)
         self.findings.append(f)
         logger.debug("finding", extra={"title": title, "severity": severity.name})
         return f

@@ -88,6 +88,7 @@ def _ssh_auth(ctx: Context, note: Note) -> int:
             "Disable password authentication, restrict `AllowUsers`, and add `sshguard` or "
             "`fail2ban`; avoid exposing SSH to the internet if not required.",
             evidence="\n".join(f"{ip}: {n}" for ip, n in failures.most_common(10)),
+            key="ssh-bruteforce",
         )
     if any(user == "root" for user, _, method in accepted if method == "password"):
         ctx.finding("Successful root login over SSH with a password", Severity.HIGH, CAT,

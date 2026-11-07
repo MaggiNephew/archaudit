@@ -21,8 +21,13 @@ CAT = "Packages"
 TRACKER = "https://security.archlinux.org"
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
+# arch-audit has printed two layouts over the years:
+#   old:  Package curl is affected by CVE-1, CVE-2. High risk! Update to 8.4.0-1!
+#   new:  pam is affected by arbitrary filesystem access. (CVE-2025-6020). High risk!
+# Both may end with "Update to [at least] X[ from testing repos]!".
 _ARCH_AUDIT_LINE = re.compile(
-    r"^Package (?P<pkg>\S+) is affected by (?P<issues>.+?)\.\s+"
+    r"^(?:Package )?(?P<pkg>\S+) is affected by (?P<issues>.+?)\.?"
+    r"(?:\s*\((?P<cves>[^)]*)\)\.?)?\s+"
     r"(?P<sev>[A-Za-z]+) risk!\.?"
     r"(?:\s+Update to (?:at least )?(?P<fix>\S+?)(?P<testing> from testing repos)?!)?\s*$"
 )
@@ -60,8 +65,9 @@ def parse_arch_audit(text: str) -> tuple[list[VulnerablePackage], list[str]]:
             unparsed.append(line)
             continue
         issues = m["issues"]
+        cves = tuple(dict.fromkeys(_CVE.findall(f"{issues} {m['cves'] or ''}")))
         packages.append(VulnerablePackage(
-            name=m["pkg"], issues=issues, cves=tuple(_CVE.findall(issues)),
+            name=m["pkg"], issues=issues, cves=cves,
             severity=_SEVERITY_MAP.get(m["sev"].lower(), Severity.MEDIUM),
             fixed_version=m["fix"], fix_in_testing=bool(m["testing"]),
         ))
@@ -169,6 +175,7 @@ def collect_packages(ctx: Context) -> list[Note]:
             "You must track their updates and review their PKGBUILDs yourself.",
             "Update them regularly with your AUR helper; remove ones you no longer use.",
             evidence="\n".join(foreign_lines[:50]),
+            key="foreign-packages",
         )
     if orphan_lines:
         note.add(md.heading("Orphaned packages"), md.bullet(orphan_lines))
@@ -178,6 +185,7 @@ def collect_packages(ctx: Context) -> list[Note]:
             "surface and need updates.",
             "Review, then `sudo pacman -Rns $(pacman -Qdtq)`.",
             evidence="\n".join(orphan_lines),
+            key="orphans",
         )
     if explicit_lines:
         rows = [ln.split(maxsplit=1) for ln in explicit_lines]
@@ -224,37 +232,81 @@ def _vulnerabilities(ctx: Context, note: Note) -> None:
     vulns, unparsed = parse_arch_audit(res.stdout)
     vulns.sort(key=lambda v: (-v.severity, v.name))
     fixable = [v for v in vulns if v.fixed_version]
-    note.summary = f"{len(vulns)} vulnerable, {len(fixable)} with fix available"
-    ctx.facts["vulnerable_packages"] = str(len(vulns))
+    unfixed = [v for v in vulns if not v.fixed_version]
+
+    if unparsed and not vulns:
+        # Output we cannot read must never look like "nothing vulnerable".
+        ctx.facts["vulnerable_packages"] = f"unknown ({len(unparsed)} unparsed lines)"
+        note.summary = "arch-audit output could not be parsed"
+        note.add(md.callout("failure", "arch-audit output not understood",
+                            "None of the lines matched a known format, so vulnerable "
+                            "packages could not be counted. The raw output is below."),
+                 md.code("\n".join(unparsed)))
+        ctx.gap("Vulnerable packages (CVEs)", CAT, GapKind.ERROR,
+                f"arch-audit printed {len(unparsed)} line(s) in an unknown format",
+                "Please report this together with the Raw/arch-audit note")
+        return
+
+    note.summary = f"{len(fixable)} with a fix available, {len(unfixed)} without a fix yet"
+    ctx.facts["vulnerable_packages"] = (f"{len(fixable)} fixable, {len(unfixed)} unfixed"
+                                        if vulns else "0")
 
     if not vulns and not unparsed:
         note.add(md.callout("success", "No known vulnerable packages",
                             "Every installed repo package is clear in the tracker."))
         return
-    note.add(md.heading("Affected packages"), md.table(
-        ("Risk", "Package", "Fixed in", "Issues"),
-        [(f"{v.severity.icon} {v.severity.label}", v.name,
-          (v.fixed_version or "no fix yet") + (" (testing)" if v.fix_in_testing else ""),
-          ", ".join(v.cves) or v.issues) for v in vulns]))
+
+    def rows(items: list[VulnerablePackage]) -> list[tuple[str, str, str, str]]:
+        return [(f"{v.severity.icon} {v.severity.label}", v.name,
+                 (v.fixed_version or "no fix yet") + (" (testing)" if v.fix_in_testing else ""),
+                 ", ".join(v.cves) or v.issues) for v in items]
+
+    if fixable:
+        note.add(md.heading("Fix available — update now"),
+                 md.table(("Risk", "Package", "Fixed in", "Issues"), rows(fixable)))
+    if unfixed:
+        note.add(md.heading("No fixed version yet"),
+                 md.callout("abstract", "About this list",
+                            "The tracker has open issues for these packages but no fixed "
+                            "release. Many are long-lived entries (old CVEs that are disputed, "
+                            "only affect unusual configurations, or wait for upstream). "
+                            "Updating will not help; check the tracker for workarounds."),
+                 md.table(("Risk", "Package", "Fixed in", "Issues"), rows(unfixed)))
     if unparsed:
         note.add(md.heading("Unparsed arch-audit output"), md.code("\n".join(unparsed)))
         ctx.gap("Some arch-audit lines", CAT, GapKind.ERROR,
                 f"{len(unparsed)} line(s) in an unexpected format; shown raw in the note")
 
-    for v in vulns:
-        if v.fixed_version:
-            fix = (f"Update now: `sudo pacman -Syu` (fixed in **{v.fixed_version}**"
-                   + (", currently only in the testing repos)." if v.fix_in_testing else ")."))
-        else:
-            fix = ("No fixed version yet. Check the tracker for workarounds, limit exposure "
-                   "of the affected software, and re-run the audit after updates.")
+    for v in fixable:
+        fix = (f"Update now: `sudo pacman -Syu` (fixed in **{v.fixed_version}**"
+               + (", currently only in the testing repos)." if v.fix_in_testing else ")."))
         ctx.finding(
             f"Vulnerable package: {v.name}", v.severity, CAT,
-            f"`{v.name}` has known security issues: {v.issues}.",
+            f"`{v.name}` has known security issues with a fixed release available: "
+            f"{v.issues}.",
             fix,
             evidence=", ".join(v.cves) or v.issues,
             references=[f"{TRACKER}/package/{v.name}",
                         *(f"{TRACKER}/{c}" for c in v.cves[:10])],
+        )
+    if unfixed:
+        serious = [v for v in unfixed if v.severity >= Severity.HIGH]
+        ctx.finding(
+            f"{len(unfixed)} package(s) with open security issues and no fix yet",
+            Severity.MEDIUM if serious else Severity.LOW, CAT,
+            "The Arch Security Tracker lists open issues for these packages but no fixed "
+            "version exists, so updating cannot resolve them. They are grouped here "
+            "instead of one finding each because many are old, disputed or "
+            "configuration-dependent entries."
+            + (f" {len(serious)} are rated high or critical by the tracker; review those "
+               "first." if serious else ""),
+            "Review the high/critical entries on the tracker, limit exposure of the affected "
+            "software where possible (e.g. don't open untrusted files with it), and remove "
+            "packages you don't need. Re-run the audit after updates.",
+            evidence="\n".join(f"{v.severity.label}: {v.name} ({', '.join(v.cves) or v.issues})"
+                               for v in unfixed),
+            references=[TRACKER],
+            key="unfixed-vulnerabilities",
         )
 
 
@@ -281,6 +333,7 @@ def _last_upgrade(ctx: Context, note: Note) -> None:
             "Run `sudo pacman -Syu` (and update AUR packages) at least weekly.",
             evidence=f"last 'starting full system upgrade': {when:%Y-%m-%d %H:%M}",
             references=["https://wiki.archlinux.org/title/System_maintenance"],
+            key="stale-upgrade",
         )
 
 
@@ -310,6 +363,7 @@ def _pending_updates(ctx: Context, note: Note) -> None:
             + (" A kernel update is included (reboot afterwards)." if kernel else ""),
             "`sudo pacman -Syu`",
             evidence="\n".join(pending[:60]),
+            key="pending-updates",
         )
 
 
@@ -365,6 +419,7 @@ def _pacman_config(ctx: Context, note: Note) -> None:
             "what you install and attempt stale-metadata (freeze) attacks.",
             "Use HTTPS mirrors only, e.g. `reflector --protocol https ...`.",
             evidence="\n".join(plain[:10]),
+            key="http-mirrors",
         )
 
 
@@ -398,6 +453,7 @@ def _integrity(ctx: Context, note: Note) -> None:
             "but can indicate tampering or a broken install.",
             "Reinstall affected packages: `sudo pacman -S <pkg>`.",
             evidence="\n".join(missing[:40]),
+            key="missing-files",
         )
     if modified:
         ctx.finding(
@@ -407,4 +463,5 @@ def _integrity(ctx: Context, note: Note) -> None:
             "Investigate each file, then reinstall the owning package "
             "(`pacman -Qo <file>`, `sudo pacman -S <pkg>`).",
             evidence="\n".join(modified[:40]),
+            key="modified-files",
         )

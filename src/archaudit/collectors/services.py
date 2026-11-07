@@ -67,6 +67,7 @@ def collect_services(ctx: Context) -> list[Note]:
             "silently not running.",
             "Inspect with `systemctl status <unit>` and `journalctl -u <unit> -b`.",
             evidence="\n".join(r[0] for r in failed_rows),
+            key="failed-units",
         )
 
     states = unit_states(ctx, list(LEGACY_INSECURE))

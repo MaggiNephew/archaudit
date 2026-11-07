@@ -37,6 +37,28 @@ def test_parse_arch_audit_variants() -> None:
     assert unparsed == ["something unexpected"]
 
 
+def test_parse_arch_audit_current_format() -> None:
+    # Lines exactly as arch-audit printed them on a real system (Oct 2026).
+    text = (
+        "pam is affected by arbitrary filesystem access. (CVE-2025-6020). High risk!\n"
+        "linux is affected by multiple issues, insufficient validation. (CVE-2021-43976, "
+        "CVE-2021-4095). Medium risk!\n"
+        "libxml2 is affected by denial of service. (CVE-2025-6170, CVE-2025-49796). "
+        "High risk! Update to at least 2.14.5-1!\n"
+        "zlib is affected by arbitrary code execution. (CVE-2026-1). Critical risk! "
+        "Update to 1.3.2-1 from testing repos!\n"
+    )
+    pkgs, unparsed = parse_arch_audit(text)
+    assert unparsed == []
+    by = {p.name: p for p in pkgs}
+    assert by["pam"].cves == ("CVE-2025-6020",) and by["pam"].severity is Severity.HIGH
+    assert by["pam"].issues == "arbitrary filesystem access" and by["pam"].fixed_version is None
+    assert by["linux"].issues == "multiple issues, insufficient validation"
+    assert by["linux"].cves == ("CVE-2021-43976", "CVE-2021-4095")
+    assert by["libxml2"].fixed_version == "2.14.5-1"
+    assert by["zlib"].fix_in_testing and by["zlib"].severity is Severity.CRITICAL
+
+
 @pytest.mark.parametrize(("value", "expected"), [
     ("Required DatabaseOptional", None),
     ("Never", Severity.HIGH),

@@ -52,7 +52,18 @@ def test_detects_expected_issues(fake_root: Path, runner: FakeRunner) -> None:
     assert "Home directories readable by other users" in t
     # SSH password auth is "no" (Match block must not leak into global settings)
     assert "SSH accepts password logins" in t  # KbdInteractive defaults to yes
-    assert result.facts["vulnerable_packages"] == "3"
+    assert result.facts["vulnerable_packages"] == "2 fixable, 1 unfixed"
+    assert t["1 package(s) with open security issues and no fix yet"] is Severity.LOW
+    assert "Vulnerable package: libxml2" not in t  # no fix -> grouped, not its own finding
+
+
+def test_unreadable_arch_audit_is_not_reported_as_clean(fake_root: Path,
+                                                        runner: FakeRunner) -> None:
+    runner.responses[("arch-audit", "--show-cve")] = (0, "totally new format\nanother\n", "")
+    result = _audit(fake_root, runner)
+    assert result.facts["vulnerable_packages"].startswith("unknown")
+    assert any(g.item == "Vulnerable packages (CVEs)" and g.kind is GapKind.ERROR
+               for g in result.gaps)
 
 
 def test_secrets_never_reach_the_report(fake_root: Path, runner: FakeRunner,
@@ -160,3 +171,34 @@ def test_documents_dir_honours_xdg(tmp_path: Path) -> None:
     (cfg / "user-dirs.dirs").write_text('XDG_DOCUMENTS_DIR="$HOME/Dokumente"\n')
     assert documents_dir(tmp_path) == tmp_path / "Dokumente"
     assert documents_dir(tmp_path / "nohome") == tmp_path / "nohome" / "Documents"
+
+
+def test_count_changes_are_not_new_findings(fake_root: Path, runner: FakeRunner,
+                                            tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    VaultWriter(vault).write(_audit(fake_root, runner))
+    runner.responses[("checkupdates",)] = (0, "curl 8.1-1 -> 8.4.0-1\na 1 -> 2\nb 1 -> 2\n", "")
+    run2 = VaultWriter(vault).write(_audit(fake_root, runner))
+    dash = (run2 / "00 Dashboard.md").read_text()
+    assert "| New findings | 0 |" in dash and "| Resolved findings | 0 |" in dash
+
+
+def test_legacy_title_keys_still_match(fake_root: Path, runner: FakeRunner,
+                                       tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    first = VaultWriter(vault).write(_audit(fake_root, runner))
+    data = json.loads((first / "findings.json").read_text())
+    for f in data["findings"]:  # rewrite as 1.0.0 did: key = category::title
+        f["key"] = f"{f['category']}::{f['title']}"
+    (first / "findings.json").write_text(json.dumps(data))
+    run2 = VaultWriter(vault).write(_audit(fake_root, runner))
+    assert "| New findings | 0 |" in (run2 / "00 Dashboard.md").read_text()
+
+
+def test_diff_only_compares_the_same_host(fake_root: Path, runner: FakeRunner,
+                                          tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    VaultWriter(vault).write(_audit(fake_root, runner))
+    (fake_root / "etc" / "hostname").write_text("otherbox\n")
+    run2 = VaultWriter(vault).write(_audit(fake_root, runner))
+    assert "Changes since previous scan" not in (run2 / "00 Dashboard.md").read_text()

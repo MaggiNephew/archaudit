@@ -165,6 +165,7 @@ def _cpu_vulnerabilities(ctx: Context, note: Note) -> None:
             "kernel and firmware (BIOS/UEFI) updated, and do not boot with mitigations off.",
             evidence="\n".join(vulnerable),
             references=["https://docs.kernel.org/admin-guide/hw-vuln/index.html"],
+            key="cpu-vulnerabilities",
         )
 
 
@@ -285,4 +286,5 @@ def _sysctl(ctx: Context, note: Note) -> None:
         "`sudo sysctl --system`:\n\n" + md.code(conf, "ini"),
         evidence="\n".join(f"{c.key} = {v} (want {c.expected})" for c, v in failing),
         references=["https://wiki.archlinux.org/title/Security#Kernel_hardening"],
+        key="sysctl-hardening",
     )
