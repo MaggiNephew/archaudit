@@ -4,14 +4,14 @@ import pytest
 
 from archaudit import md
 from archaudit.collectors.kernel import SYSCTL_CHECKS
-from archaudit.collectors.network import parse_ss, parse_sshd_config
+from archaudit.collectors.network import Listener, parse_ss, parse_sshd_config
 from archaudit.collectors.packages import (
     last_full_upgrade,
     parse_arch_audit,
     parse_pacman_conf,
     siglevel_risk,
 )
-from archaudit.collectors.users import password_state
+from archaudit.collectors.users import nopasswd_all, password_state
 from archaudit.core import Context, Severity
 
 
@@ -88,17 +88,46 @@ def test_last_full_upgrade_both_timestamp_formats() -> None:
     assert last_full_upgrade("nothing here") is None
 
 
+@pytest.mark.parametrize(("address", "scope", "exposed"), [
+    ("0.0.0.0", "all interfaces", True), ("::", "all interfaces", True),
+    ("*", "all interfaces", True), ("192.168.1.5", "specific address", True),
+    ("127.0.0.1", "localhost", False), ("::1", "localhost", False),
+    ("::ffff:127.0.0.1", "localhost", False),        # dual-stack view of IPv4 loopback
+    ("::ffff:0.0.0.0", "all interfaces", True),
+    ("224.0.0.251", "multicast group", False),       # mDNS group membership
+    ("ff02::fb", "multicast group", False),
+    ("fe80::1", "link-local", False),
+])
+def test_listener_scope(address: str, scope: str, exposed: bool) -> None:
+    item = Listener("udp", address, 5353, "")
+    assert item.scope == scope and item.exposed is exposed
+
+
+@pytest.mark.parametrize(("rule", "full"), [
+    ("unome ALL=(ALL) NOPASSWD: ALL", True),
+    ("%wheel ALL=(ALL:ALL) NOPASSWD: ALL", True),
+    ("bob ALL=(root) NOPASSWD: SETENV: ALL", True),
+    ("bob ALL=(root) NOPASSWD: /usr/bin/systemctl restart x, ALL", True),
+    ("bob ALL=(root) NOPASSWD: /usr/bin/systemctl restart x", False),
+    ("bob ALL=(root) NOPASSWD: /usr/bin/ALLOWED", False),
+])
+def test_nopasswd_all(rule: str, full: bool) -> None:
+    assert nopasswd_all(rule) is full
+
+
 def test_parse_ss() -> None:
     out = parse_ss('tcp LISTEN 0 4096 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=1,fd=3))\n'
                    "tcp LISTEN 0 4096 [::1]:5432 [::]:*\n"
                    "udp UNCONN 0 0 127.0.0.53%lo:53 0.0.0.0:*\n"
                    "tcp LISTEN 0 128 *:631 *:*\n"
+                   'udp UNCONN 0 0 [fe80::93be:1]%wlo1:546 [::]:* users:(("NetworkManager",pid=7,fd=1))\n'
                    "garbage\n")
     by_port = {x.port: x for x in out}
     assert by_port[22].process == "sshd" and by_port[22].exposed
     assert by_port[5432].scope == "localhost" and not by_port[5432].exposed
     assert by_port[53].address == "127.0.0.53"
     assert by_port[631].scope == "all interfaces"
+    assert by_port[546].address == "fe80::93be:1" and by_port[546].scope == "link-local"
 
 
 def test_sshd_config_first_match_wins_with_include_and_match(fake_root: Path) -> None:

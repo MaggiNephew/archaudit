@@ -432,10 +432,11 @@ def _integrity(ctx: Context, note: Note) -> None:
             argv, what = ["pacman", "-Qk"], "Package file integrity (existence)"
     else:
         argv, what = ["pacman", "-Qk"], "Package file integrity (existence)"
-    res = ctx.runner.run(argv, max(ctx.timeout, 600), ok_codes=(0, 1))
-    if res.status.value in ("timeout", "missing"):
-        ctx.gap(what, CAT, GapKind.TIMEOUT if res.status.value == "timeout"
-                else GapKind.MISSING_TOOL)
+    # Exit 1 just means "problems found"; ctx.cmd logs the command and
+    # records timeouts and errors as gaps.
+    res = ctx.cmd(argv, category=CAT, what=what, raw_name=" ".join(argv), ok_codes=(0, 1),
+                  timeout=max(ctx.timeout, 600))
+    if res is None:
         return
     text = res.stdout + "\n" + res.stderr
     missing = [ln for ln in text.splitlines() if "(No such file or directory)" in ln]

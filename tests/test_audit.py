@@ -42,7 +42,7 @@ def test_detects_expected_issues(fake_root: Path, runner: FakeRunner) -> None:
     assert t["SSH permits direct root login"] is Severity.HIGH
     assert t["Redis (often unauthenticated) listening on all interfaces (port 6379)"] \
         is Severity.HIGH
-    assert t["sudo rules without password (NOPASSWD)"] is Severity.MEDIUM
+    assert t["sudo grants full root without a password (NOPASSWD: ALL)"] is Severity.HIGH
     assert t["Users in root-equivalent group 'docker'"] is Severity.MEDIUM
     assert "SSH brute-force activity: 25 failed logins in 30 days" in t
     assert t["System not fully upgraded for 45 days"] is Severity.MEDIUM

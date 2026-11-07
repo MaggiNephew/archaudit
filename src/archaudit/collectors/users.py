@@ -75,6 +75,16 @@ def password_state(field: str) -> str:
     return "unknown hash"
 
 
+_SUDO_TAG = re.compile(r"^(?:[A-Z_]+:\s*)+")
+
+
+def nopasswd_all(rule: str) -> bool:
+    """True if a NOPASSWD rule allows any command (``NOPASSWD: ALL``)."""
+    _, _, commands = rule.partition("NOPASSWD:")
+    commands = _SUDO_TAG.sub("", commands.strip())
+    return any(c.strip() == "ALL" for c in commands.split(","))
+
+
 def collect_users(ctx: Context) -> list[Note]:
     note = Note("Users & Access", CAT, tags=["users", "access", "sudo"])
     ctx.set_note(note.title)
@@ -205,15 +215,31 @@ def _sudo(ctx: Context, note: Note) -> None:
     if not rules:
         return
     note.add(md.heading("sudo rules"), md.table(("File", "Rule"), rules))
-    nopasswd = [f"{p}: {r}" for p, r in rules if "NOPASSWD" in r and not r.startswith("Defaults")]
-    if nopasswd:
+    nopasswd = [(p, r) for p, r in rules if "NOPASSWD" in r and not r.startswith("Defaults")]
+    full = [f"{p}: {r}" for p, r in nopasswd if nopasswd_all(r)]
+    limited = [f"{p}: {r}" for p, r in nopasswd if not nopasswd_all(r)]
+    if full:
+        ctx.finding(
+            "sudo grants full root without a password (NOPASSWD: ALL)", Severity.HIGH, CAT,
+            "Any process running as these users - malware from a browser exploit, a malicious "
+            "package script, or an automation tool doing something unexpected - can run any "
+            "command as root without a prompt.",
+            "Remove the rule with `sudo visudo -f <file>`. If a tool really needs unattended "
+            "root, allow only the exact commands it needs, e.g. "
+            "`user ALL=(root) NOPASSWD: /usr/bin/systemctl restart myservice`.",
+            evidence="\n".join(full),
+            key="sudo-nopasswd-all",
+        )
+    if limited:
         ctx.finding(
             "sudo rules without password (NOPASSWD)", Severity.MEDIUM, CAT,
-            "Any process running as these users - including malware from a browser or a "
-            "malicious package script - can become root silently.",
-            "Remove `NOPASSWD:` (edit with `sudo visudo`) or restrict it to specific, "
-            "harmless commands.",
-            evidence="\n".join(nopasswd),
+            "These users can run the listed commands as root without a password. If any of "
+            "them can spawn a shell or edit files (editors, pagers, `systemctl edit`, "
+            "package managers), that is full root.",
+            "Check each command against GTFOBins (https://gtfobins.github.io); remove "
+            "`NOPASSWD:` where it isn't needed (`sudo visudo`).",
+            evidence="\n".join(limited),
+            key="sudo-nopasswd",
         )
     if any(re.search(r"Defaults\s+.*!authenticate", r) for _, r in rules):
         ctx.finding(

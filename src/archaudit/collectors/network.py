@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import json
 import re
 from dataclasses import dataclass
@@ -47,17 +48,30 @@ class Listener:
 
     @property
     def scope(self) -> str:
-        addr = self.address
-        if addr in ("0.0.0.0", "*", "::"):  # noqa: S104 - classifying, not binding
+        if self.address in ("*", ""):
             return "all interfaces"
-        if addr.startswith("127.") or addr == "::1":
+        try:
+            ip: ipaddress.IPv4Address | ipaddress.IPv6Address = \
+                ipaddress.ip_address(self.address)
+        except ValueError:
+            return "specific address"
+        # "::ffff:127.0.0.1" is IPv4 loopback seen through a dual-stack socket.
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if ip.is_unspecified:
+            return "all interfaces"
+        if ip.is_loopback:
             return "localhost"
-        if addr.startswith("fe80"):
+        if ip.is_multicast:
+            return "multicast group"
+        if ip.is_link_local:
             return "link-local"
         return "specific address"
 
     @property
     def exposed(self) -> bool:
+        """Accepts connections from other hosts. Multicast group memberships
+        (e.g. mDNS on 224.0.0.251) are listed but are not listening services."""
         return self.scope in ("all interfaces", "specific address")
 
 
@@ -70,7 +84,8 @@ def parse_ss(text: str) -> list[Listener]:
             continue
         proto, local = parts[0], parts[4]
         host, _, port = local.rpartition(":")
-        host = host.strip("[]").split("%", 1)[0]
+        # ss prints "[fe80::1]%wlo1" and "127.0.0.53%lo": drop the scope, then brackets.
+        host = host.split("%", 1)[0].strip("[]")
         if not port.isdigit():
             continue
         proc = _PROC.search(parts[6]) if len(parts) > 6 else None
@@ -148,16 +163,17 @@ def collect_network(ctx: Context) -> list[Note]:
     forwarding = (ctx.read("/proc/sys/net/ipv4/ip_forward") or "").strip()
     note.add(md.heading("Configuration"),
              md.kv_table([("DNS servers", ", ".join(nameservers) or "none"),
-                          ("Network services active", ", ".join(managers) or "none detected"),
+                          ("Network management services", ", ".join(managers) or "none detected"),
                           ("IPv4 forwarding", {"1": "enabled", "0": "disabled"}.get(forwarding,
                                                                                     "unknown"))]))
     if hosts := ctx.read("/etc/hosts"):
         note.add(md.callout("example", "/etc/hosts", md.code(hosts), folded=True))
 
     firewall_active = _firewall(ctx, note)
-    _listeners(ctx, note, firewall_active)
-    note.summary = f"{len(managers)} network service(s), firewall: " \
-                   f"{'active' if firewall_active else 'none detected'}"
+    exposed_ports = _listeners(ctx, note, firewall_active)
+    note.summary = (f"{exposed_ports if exposed_ports is not None else 'unknown'} "
+                    f"network-reachable port(s), firewall: "
+                    f"{'active' if firewall_active else 'none detected'}")
     return [note, _ssh(ctx)]
 
 
@@ -196,45 +212,71 @@ def _firewall(ctx: Context, note: Note) -> bool:
     return bool(running) or has_rules
 
 
-def _listeners(ctx: Context, note: Note, firewall_active: bool) -> None:
+def _listeners(ctx: Context, note: Note, firewall_active: bool) -> int | None:
+    """Report listening sockets; returns the number of network-reachable ports."""
     res = ctx.cmd(["ss", "-H", "-tulpn"], category=CAT, what="Listening ports",
                   raw_name="ss -tulpn")
     if res is None:
-        return
-    listeners = parse_ss(res.stdout)
-    if not ctx.is_root and any(not item.process for item in listeners):
+        return None
+    return report_listeners(ctx, note, parse_ss(res.stdout), firewall_active,
+                            partial_processes=not ctx.is_root)
+
+
+def report_listeners(ctx: Context, note: Note, listeners: list[Listener],
+                     firewall_active: bool, *, partial_processes: bool) -> int:
+    """Shared by the Linux and Windows network collectors."""
+    if partial_processes and any(not item.process for item in listeners):
         ctx.gap("Process names for listening ports", CAT, GapKind.NEEDS_ROOT,
-                "ss only shows processes owned by the current user")
+                "only processes owned by the current user are shown")
     note.add(md.heading("Listening ports"), md.table(
         ("Proto", "Address", "Port", "Reachable from", "Process"),
         [(item.proto, item.address, item.port, item.scope, item.process or "?")
          for item in listeners]))
 
-    exposed = [item for item in listeners if item.exposed]
-    ctx.facts["exposed_ports"] = str(len({(x.proto, x.port) for x in exposed}))
-    for item in exposed:
-        if item.port in RISKY_PORTS:
-            sev, name = RISKY_PORTS[item.port]
-            ctx.finding(
-                f"{name} listening on {item.scope} (port {item.port})", sev, CAT,
-                f"{name} is reachable from the network on {item.address}:{item.port}"
-                f"{' by ' + item.process if item.process else ''}.",
-                "Bind it to 127.0.0.1 if only local use is needed, require authentication/TLS, "
-                "or block the port in the firewall. Disable the service if unused.",
-                evidence=f"{item.proto} {item.address}:{item.port} {item.process}",
-            )
-    if exposed:
-        listing = "\n".join(f"{x.proto} {x.address}:{x.port} {x.process}" for x in exposed)
+    # One entry per (protocol, port): IPv4 and IPv6 sockets of the same
+    # service count once. This is the number shown everywhere.
+    ports: dict[tuple[str, int], list[Listener]] = {}
+    for item in listeners:
+        if item.exposed:
+            ports.setdefault((item.proto, item.port), []).append(item)
+    ctx.facts["exposed_ports"] = str(len(ports))
+
+    risky: dict[int, list[Listener]] = {}
+    for (_, port), items in ports.items():
+        if port in RISKY_PORTS:
+            risky.setdefault(port, []).extend(items)
+    for port, items in sorted(risky.items()):
+        sev, name = RISKY_PORTS[port]
+        first = min(items, key=lambda x: x.scope != "all interfaces")
+        names = sorted({x.process for x in items if x.process})
         ctx.finding(
-            f"{len(exposed)} service socket(s) reachable from the network",
+            f"{name} listening on {first.scope} (port {port})", sev, CAT,
+            f"{name} is reachable from the network on port {port}"
+            f"{' (' + ', '.join(names) + ')' if names else ''}.",
+            "Bind it to 127.0.0.1 if only local use is needed, require authentication/TLS, "
+            "or block the port in the firewall. Disable the service if unused.",
+            evidence="\n".join(f"{x.proto} {x.address}:{x.port} {x.process}" for x in items),
+            key=f"risky-port-{port}",
+        )
+    if ports:
+        lines = []
+        for (proto, port), items in sorted(ports.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+            procs = ", ".join(sorted({x.process for x in items if x.process})) or "?"
+            addrs = ", ".join(sorted({x.address for x in items}))
+            lines.append(f"{proto} {port} ({procs}) on {addrs}")
+        ctx.finding(
+            f"{len(ports)} network-reachable port(s)",
             Severity.LOW if firewall_active else Severity.MEDIUM, CAT,
-            "These sockets listen on non-loopback addresses. Each is attack surface; "
+            "These ports accept connections from other hosts (not just localhost). Each is "
+            "attack surface; "
             + ("a firewall is active, so check that it filters these ports."
                if firewall_active else "no firewall was detected to filter them."),
-            "Stop services you don't need (`systemctl disable --now <unit>`), bind local-only "
-            "services to 127.0.0.1, and filter the rest with a firewall.",
-            evidence=listing,
+            "Stop services you don't need, bind local-only services to 127.0.0.1, and "
+            "filter the rest with a firewall.",
+            evidence="\n".join(lines),
+            key="exposed-ports",
         )
+    return len(ports)
 
 
 def _ssh(ctx: Context) -> Note:
@@ -250,7 +292,9 @@ def _ssh(ctx: Context) -> Note:
     running = states.get("sshd.service") == "active"
     source = "sshd_config files"
     opts: dict[str, str] = {}
-    if ctx.is_root:
+    # `sshd -T` needs host keys, so on a machine where sshd was installed but
+    # never set up it fails; that is "not in use", not a collection error.
+    if running and ctx.is_root:
         res = ctx.cmd(["sshd", "-T"], category=CAT, what="Effective sshd config",
                       raw_name="sshd -T")
         if res:
@@ -258,7 +302,7 @@ def _ssh(ctx: Context) -> Note:
             source = "`sshd -T` (effective)"
     if not opts:
         opts = parse_sshd_config(ctx)
-        if not ctx.is_root:
+        if running and not ctx.is_root:
             ctx.gap("Effective sshd configuration", CAT, GapKind.NEEDS_ROOT,
                     "parsed config files instead of `sshd -T` (Match blocks ignored)")
 
